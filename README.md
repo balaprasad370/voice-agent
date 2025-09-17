@@ -23,6 +23,14 @@ Fastify backend that connects Twilio Voice Media Streams to OpenAI Realtime (g71
 - `backend/`: Fastify server, Twilio + OpenAI Realtime integration
 - `frontend/`: Minimal HTML form to trigger `POST /calls`
 
+
+### About Transcriptions
+- There are two methods available:
+  1) Capture transcriptions in real-time and store them with precise timestamps. This method provides the most accurate transcription with exact sentence timing.
+  2) Record the entire audio and transcribe it afterward. This approach also provides timestamps with text but is less user-friendly for UI display.
+
+Due to time constraints for completing the assessment, I opted for the second method.
+
 ### System design (Kubernetes: architecture, scaling, sticky sessions, load balancer)
 This section describes a production-ready deployment on Kubernetes (K8s) for Twilio Media Streams + OpenAI Realtime.
 
@@ -199,7 +207,11 @@ Notes:
 From `backend/`:
 ```bash
 npm start # runs: node server.js
+npm run worker  # worker queue to handle the data 
 ```
+
+
+
 
 ### Security
 - Keep your `.env` out of version control.
