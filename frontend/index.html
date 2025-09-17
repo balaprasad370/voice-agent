@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Make a Call</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background-color: #f0f2f5;
+        }
+        .form-container {
+            background-color: white;
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            width: 100%;
+            max-width: 400px;
+            margin: 20px;
+        }
+        h2 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 30px;
+        }
+        .form-group {
+            margin-bottom: 25px;
+        }
+        label {
+            display: block;
+            margin-bottom: 10px;
+            font-weight: 600;
+            color: #444;
+        }
+        input[type="tel"] {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            font-size: 16px;
+            transition: border-color 0.3s ease;
+            width: 100%;
+        }
+        input[type="tel"]:focus {
+            border-color: #4CAF50;
+            outline: none;
+        }
+        button {
+            background-color: #4CAF50;
+            color: white;
+            padding: 14px 24px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 16px;
+            width: 100%;
+            font-weight: 600;
+            transition: background-color 0.3s ease;
+        }
+        button:hover {
+            background-color: #45a049;
+            transform: translateY(-1px);
+        }
+        button:active {
+            transform: translateY(1px);
+        }
+        .status-message {
+            margin-top: 20px;
+            padding: 12px;
+            border-radius: 8px;
+            display: none;
+            text-align: center;
+            font-weight: 500;
+        }
+        .success {
+            background-color: #e7f6e7;
+            color: #2e7d32;
+            border: 1px solid #c8e6c9;
+        }
+        .error {
+            background-color: #fdecea;
+            color: #c62828;
+            border: 1px solid #ffcdd2;
+        }
+    </style>
+</head>
+<body>
+    <div class="form-container">
+        <h2>Make a Call</h2>
+        <form id="callForm">
+            <div class="form-group">
+                <label for="phoneNumber">Phone Number:</label>
+                <input type="tel" id="phoneNumber" name="phoneNumber" 
+                       placeholder="Enter phone number (e.g., 919876543210)" required
+                       pattern="[0-9]+" title="Please enter only numbers" >
+
+                       <span style="font-size: 12px; color: #666; margin-top: 5px;">Please enter with country code</span>
+            </div>
+            <button type="submit">Make Call</button>
+        </form>
+        <div id="statusMessage" class="status-message"></div>
+    </div>
+
+    <script>
+        document.getElementById('callForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            
+            const phoneNumber = document.getElementById('phoneNumber').value;
+            const statusMessage = document.getElementById('statusMessage');
+            const submitButton = e.target.querySelector('button');
+            
+            try {
+                submitButton.disabled = true;
+                submitButton.textContent = 'Initiating Call...';
+                
+                const response = await fetch('http://localhost:5050/calls', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ phoneNumber })
+                });
+
+                statusMessage.style.display = 'block';
+                
+                if (response.ok) {
+                    statusMessage.className = 'status-message success';
+                    statusMessage.textContent = 'Call initiated successfully!';
+                    statusMessage.style.display = 'block';
+                } else {
+                    throw new Error('Failed to initiate call');
+                }
+            } catch (error) {
+                statusMessage.className = 'status-message error';
+                statusMessage.textContent = 'Error: Failed to initiate call. Please try again.';
+                statusMessage.style.display = 'block';
+                console.error('Error:', error);
+            } finally {
+                submitButton.disabled = false;
+                submitButton.textContent = 'Make Call';
+            }
+        });
+    </script>
+</body>
+</html>
