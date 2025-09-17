@@ -126,6 +126,8 @@ fastify.register(async (scopedFastify) => {
         twilioWebSocket: connection,
       });
 
+     
+
       const session = new RealtimeSession(agent, {
         transport: twilioTransportLayer,
         model: "gpt-realtime",
@@ -137,6 +139,10 @@ fastify.register(async (scopedFastify) => {
           },
         },
       });
+
+
+
+
 
       await session.connect({
         apiKey: OPENAI_API_KEY,
