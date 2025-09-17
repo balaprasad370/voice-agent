@@ -1,4 +1,4 @@
-## PopularDigitalAI – Voice Agent (Twilio Media Streams + OpenAI Realtime)
+## Voice Agent (Twilio Media Streams + OpenAI Realtime)
 
 This project contains a Fastify backend that connects Twilio Voice Media Streams to OpenAI Realtime, and a simple frontend page to initiate outbound calls.
 
