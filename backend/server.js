@@ -9,6 +9,7 @@ import twilio from "twilio";
 import fs from "node:fs";
 import { startWavFile, appendUlawBase64, finalizeWav } from "./twilioStream.js";
 import ffmpeg from "fluent-ffmpeg";
+import { publishMixJob } from "./queue.js";
 
 // (Removed local WAV helpers; handled in twilioStream.js)
 
@@ -90,44 +91,47 @@ fastify.all("/incoming-call", async (request, reply) => {
 });
 
 // WebSocket route for media-stream
+// Per-call sessions keyed by streamSid (stateless across instances, in-memory per process)
+const sessions = new Map();
+
 fastify.register(async (scopedFastify) => {
   scopedFastify.get(
     "/media-stream",
     { websocket: true },
     async (connection) => {
-      let rt = null;
-      let streamSId = null;
-      let callSId = null;
-      // Agent silence filler controls
-      let agentSilenceTimer = null;
-      let lastAgentWriteMs = 0;
+      let currentStreamSid = null;
       const SILENCE_FRAME_MS = 20; // Twilio ~20ms frames
       const SILENCE_FRAME_SAMPLES = 160; // 8kHz * 0.02s
-      const SILENCE_BASE64 = Buffer.alloc(SILENCE_FRAME_SAMPLES, 0xff).toString(
-        "base64"
-      );
-      function startAgentSilenceFiller(agentaudioPath) {
-        if (agentSilenceTimer) return;
-        agentSilenceTimer = setInterval(() => {
+      const SILENCE_BASE64 = Buffer.alloc(SILENCE_FRAME_SAMPLES, 0xff).toString("base64");
+
+      function startAgentSilenceFiller(session) {
+        if (session.agentSilenceTimer) return;
+        session.agentSilenceTimer = setInterval(() => {
           const now = Date.now();
-          if (now - lastAgentWriteMs >= SILENCE_FRAME_MS) {
-            appendUlawBase64(agentaudioPath, SILENCE_BASE64);
-            lastAgentWriteMs = now;
+          if (now - session.lastAgentWriteMs >= SILENCE_FRAME_MS) {
+            appendUlawBase64(session.agentPath, SILENCE_BASE64);
+            session.lastAgentWriteMs = now;
           }
         }, SILENCE_FRAME_MS);
       }
-      function stopAgentSilenceFiller() {
-        if (agentSilenceTimer) {
-          clearInterval(agentSilenceTimer);
-          agentSilenceTimer = null;
+      function stopAgentSilenceFiller(session) {
+        if (session.agentSilenceTimer) {
+          clearInterval(session.agentSilenceTimer);
+          session.agentSilenceTimer = null;
+        }
+      }
+
+      function cleanupSession(session) {
+        try { finalizeWav(session.callerPath); } catch {}
+        try { finalizeWav(session.agentPath); } catch {}
+        stopAgentSilenceFiller(session);
+        if (session.rt) {
+          try { session.rt.close(); } catch {}
+          session.rt = null;
         }
       }
 
       try {
-        //twilio response from client
-        const twilioaudioPath = "tmp/twilio_audio.wav";
-        const agentaudioPath = "tmp/agent_audio.wav";
-
         const twilioWebSocket = connection; // Twilio WebSocket instance
 
         // When client sends a message
@@ -135,38 +139,46 @@ fastify.register(async (scopedFastify) => {
           msg = JSON.parse(msg.toString());
 
           if (msg.event === "start") {
-            streamSId = msg.start.streamSid;
-            callSId = msg.start.callSid;
+            const streamSid = msg.start.streamSid;
+            const callSid = msg.start.callSid;
+            currentStreamSid = streamSid;
 
-            startWavFile(twilioaudioPath);
-            startWavFile(agentaudioPath);
-            lastAgentWriteMs = Date.now();
-            startAgentSilenceFiller(agentaudioPath);
-            // Initialize OpenAI Realtime connection once per call
-            rt = new RealtimeConnection(OPENAI_API_KEY, {
-              instructions: "You are a helpful assistant.",
-            });
-            // Optional: log realtime events
-            rt.onMessage((data) => {
+            const callerPath = `tmp/${callSid}-caller.wav`;
+            const agentPath = `tmp/${callSid}-agent.wav`;
+            const outputPath = `tmp/${callSid}-mixed.wav`;
+
+            startWavFile(callerPath);
+            startWavFile(agentPath);
+
+            const session = {
+              streamSid,
+              callSid,
+              callerPath,
+              agentPath,
+              outputPath,
+              rt: new RealtimeConnection(OPENAI_API_KEY, {
+                instructions: "You are a helpful assistant.",
+              }),
+              lastAgentWriteMs: Date.now(),
+              agentSilenceTimer: null,
+            };
+            sessions.set(streamSid, session);
+            startAgentSilenceFiller(session);
+
+            session.rt.onMessage((data) => {
               console.log("Realtime:", data?.type || data);
-
               switch (data.type) {
-                case "response.audio.delta":
+                case "response.audio.delta": {
                   const audioDelta = {
                     event: "media",
-                    streamSid: streamSId,
-                    media: {
-                      payload: data.delta,
-                    },
+                    streamSid: session.streamSid,
+                    media: { payload: data.delta },
                   };
-                  // mark recent agent write; this suppresses silence frames
-                  lastAgentWriteMs = Date.now();
-                  appendUlawBase64(agentaudioPath, data.delta);
-
-                  // Send immediately - no processing delays
-                  twilioWebSocket.send(JSON.stringify(audioDelta));
+                  session.lastAgentWriteMs = Date.now();
+                  appendUlawBase64(session.agentPath, data.delta);
+                  try { twilioWebSocket.send(JSON.stringify(audioDelta)); } catch {}
                   break;
-                // Add more cases here if needed
+                }
                 default:
                   break;
               }
@@ -174,23 +186,24 @@ fastify.register(async (scopedFastify) => {
           }
 
           if (msg.event === "media") {
-            appendUlawBase64(twilioaudioPath, msg.media.payload);
-            // Forward base64 μ-law audio to OpenAI Realtime
-            if (rt) {
-              rt.sendMessage({
-                type: "input_audio_buffer.append",
-                audio: msg.media.payload,
-              });
+            const s = sessions.get(currentStreamSid);
+            if (s) {
+              appendUlawBase64(s.callerPath, msg.media.payload);
+              if (s.rt) {
+                s.rt.sendMessage({ type: "input_audio_buffer.append", audio: msg.media.payload });
+              }
             }
           }
 
           if (msg.event === "stop") {
-            finalizeWav(twilioaudioPath);
-            finalizeWav(agentaudioPath);
-            stopAgentSilenceFiller();
-            // Optionally commit audio for processing
-            if (rt) {
-              rt.sendMessage({ type: "input_audio_buffer.commit" });
+            const s = sessions.get(currentStreamSid);
+            if (s) {
+              finalizeWav(s.callerPath);
+              finalizeWav(s.agentPath);
+              stopAgentSilenceFiller(s);
+              if (s.rt) {
+                s.rt.sendMessage({ type: "input_audio_buffer.commit" });
+              }
             }
           }
         });
@@ -198,40 +211,24 @@ fastify.register(async (scopedFastify) => {
         // When connection is closed
         twilioWebSocket.on("close", (code, reason) => {
           console.log("Connection closed");
-          // Update WAV sizes
-          finalizeWav(twilioaudioPath);
-          finalizeWav(agentaudioPath);
-          stopAgentSilenceFiller();
-
-          ffmpeg()
-            .input(twilioaudioPath)
-            .input(agentaudioPath)
-            .complexFilter([
-              {
-                filter: "amix",
-                options: {
-                  inputs: 2,
-                  duration: "first", // or 'longest' / 'shortest'
-                  dropout_transition: 0,
-                },
-                outputs: "mixed",
-              },
-            ])
-            .outputOptions(["-map [mixed]"])
-            .on("start", (cmd) => console.log("FFmpeg command:", cmd))
-            .on("error", (err, stdout, stderr) => {
-              console.error("Error:", err.message);
-              console.error("stderr:", stderr);
-            })
-            .on("end", () => {
-              console.log("Mixing complete, file saved:", outputAudioPath);
-            })
-            .save(outputAudioPath);
-
-          // Close realtime connection
-          if (rt) {
-            rt.close();
-            rt = null;
+          const s = sessions.get(currentStreamSid);
+          if (s) {
+            // finalize files and stop timers
+            cleanupSession(s);
+            // enqueue background mixing + transcription job
+            try {
+              await publishMixJob({
+                callSid: s.callSid,
+                streamSid: s.streamSid,
+                callerPath: s.callerPath,
+                agentPath: s.agentPath,
+                outputPath: s.outputPath,
+              });
+            } catch (e) {
+              console.error("Failed to publish mix job:", e);
+            }
+            // Remove from session map
+            sessions.delete(currentStreamSid);
           }
           console.log("Code:", code, "Reason:", reason.toString());
         });
