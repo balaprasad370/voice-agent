@@ -64,7 +64,7 @@ fastify.post("/calls", async (request, reply) => {
         <?xml version="1.0" encoding="UTF-8"?>
         <Response>
             <Connect>   
-                <Stream url="wss://fd8aca9f8034.ngrok-free.app/media-stream" />
+                <Stream url="wss://${request.headers.host}/media-stream" />
             </Connect>
         </Response>`.trim();
 
