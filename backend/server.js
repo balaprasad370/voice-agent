@@ -9,7 +9,7 @@ import twilio from "twilio";
 import fs from "node:fs";
 import { startWavFile, appendUlawBase64, finalizeWav } from "./twilioStream.js";
 import ffmpeg from "fluent-ffmpeg";
-import { publishMixJob } from "./queue.js";
+import { publishMixJob } from "./queue.js"
 
 // (Removed local WAV helpers; handled in twilioStream.js)
 
@@ -37,6 +37,12 @@ const fastify = Fastify();
 fastify.register(cors);
 fastify.register(fastifyFormBody);
 fastify.register(fastifyWs);
+
+
+// check for tmp folder if not present then create it
+if (!fs.existsSync("tmp")) {
+  fs.mkdirSync("tmp");
+}
 
 // Removed Agents SDK setup; using RealtimeConnection directly
 
@@ -143,6 +149,7 @@ fastify.register(async (scopedFastify) => {
             const callSid = msg.start.callSid;
             currentStreamSid = streamSid;
 
+
             const callerPath = `tmp/${callSid}-caller.wav`;
             const agentPath = `tmp/${callSid}-agent.wav`;
             const outputPath = `tmp/${callSid}-mixed.wav`;
@@ -209,7 +216,7 @@ fastify.register(async (scopedFastify) => {
         });
 
         // When connection is closed
-        twilioWebSocket.on("close", (code, reason) => {
+        twilioWebSocket.on("close", async (code, reason) => {
           console.log("Connection closed");
           const s = sessions.get(currentStreamSid);
           if (s) {

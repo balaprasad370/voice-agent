@@ -4,7 +4,7 @@ const {
   MYSQL_HOST = "localhost",
   MYSQL_PORT = "3306",
   MYSQL_USER = "root",
-  MYSQL_PASSWORD = "",
+  MYSQL_PASSWORD = "123456789",
   MYSQL_DATABASE = "voiceagent",
 } = process.env;
 
@@ -18,6 +18,7 @@ export const pool = mysql.createPool({
   connectionLimit: 10,
   queueLimit: 0,
 });
+
 
 export async function initSchema() {
   await pool.execute(
@@ -37,7 +38,7 @@ export async function initSchema() {
 
 export async function saveTranscription(callSid, streamSid, outputPath, transcriptObj) {
   const [result] = await pool.execute(
-    `INSERT INTO transcriptions (callSid, streamSid, outputPath, transcript) VALUES (?, ?, ?, CAST(? AS JSON))`,
+    `INSERT INTO transcriptions (callSid, streamSid, outputPath, transcript) VALUES (?, ?, ?, ?)`,
     [callSid, streamSid, outputPath, JSON.stringify(transcriptObj)]
   );
   return result.insertId;

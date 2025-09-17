@@ -52,139 +52,6 @@ Key recommendations:
 - Use proper TLS (valid CA) on the public endpoint; Twilio requires HTTPS/WSS.
 - Set resource requests/limits and readiness/liveness probes to enable reliable HPA.
 
-Example manifests (minimal):
-
-Deployment and Service:
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: voice-agent
-spec:
-  replicas: 3
-  selector:
-    matchLabels:
-      app: voice-agent
-  template:
-    metadata:
-      labels:
-        app: voice-agent
-    spec:
-      containers:
-        - name: backend
-          image: your-registry/voice-agent:latest
-          imagePullPolicy: IfNotPresent
-          env:
-            - name: OPENAI_API_KEY
-              valueFrom:
-                secretKeyRef:
-                  name: voice-agent-secrets
-                  key: OPENAI_API_KEY
-            - name: TWILIO_ACCOUNT_SID
-              valueFrom:
-                secretKeyRef:
-                  name: voice-agent-secrets
-                  key: TWILIO_ACCOUNT_SID
-            - name: TWILIO_AUTH_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: voice-agent-secrets
-                  key: TWILIO_AUTH_TOKEN
-            - name: TWILIO_PHONE_NUMBER
-              valueFrom:
-                secretKeyRef:
-                  name: voice-agent-secrets
-                  key: TWILIO_PHONE_NUMBER
-            - name: PORT
-              value: "5050"
-          ports:
-            - containerPort: 5050
-          readinessProbe:
-            httpGet:
-              path: /
-              port: 5050
-            initialDelaySeconds: 5
-            periodSeconds: 10
-          livenessProbe:
-            httpGet:
-              path: /
-              port: 5050
-            initialDelaySeconds: 15
-            periodSeconds: 20
-          resources:
-            requests:
-              cpu: "250m"
-              memory: "256Mi"
-            limits:
-              cpu: "1"
-              memory: "1Gi"
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: voice-agent
-spec:
-  selector:
-    app: voice-agent
-  ports:
-    - port: 80
-      targetPort: 5050
-      protocol: TCP
-  type: ClusterIP
-```
-
-Ingress (NGINX; enables WebSocket and optional cookie affinity for browser paths):
-```yaml
-apiVersion: networking.k8s.io/v1
-kind: Ingress
-metadata:
-  name: voice-agent
-  annotations:
-    kubernetes.io/ingress.class: nginx
-    cert-manager.io/cluster-issuer: letsencrypt
-    # Cookie affinity helps only for browser traffic; Twilio does not send cookies.
-    nginx.ingress.kubernetes.io/affinity: "cookie"
-    nginx.ingress.kubernetes.io/session-cookie-name: "route"
-spec:
-  tls:
-    - hosts:
-        - voice.yourdomain.com
-      secretName: voice-agent-tls
-  rules:
-    - host: voice.yourdomain.com
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: voice-agent
-                port:
-                  number: 80
-```
-
-Horizontal Pod Autoscaler (CPU-based; consider custom metrics like active WS):
-```yaml
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: voice-agent
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: voice-agent
-  minReplicas: 3
-  maxReplicas: 20
-  metrics:
-    - type: Resource
-      resource:
-        name: cpu
-        target:
-          type: Utilization
-          averageUtilization: 60
-```
-
 Load balancer options:
 - Managed Ingress (recommended): terminate TLS at Ingress (NGINX, AWS ALB, GKE Ingress). Ensure WebSocket upgrade is allowed (NGINX does this automatically).
 - Service `type: LoadBalancer`: expose the Service directly with a public LB if you do not need path-based routing. Still requires TLS termination (use a cloud LB that supports TLS) and correct WS support.
@@ -201,10 +68,12 @@ Observability:
 
 ### Prerequisites
 - Node.js 18+ and npm
-- An OpenAI API key with access to the Realtime API
-- A Twilio account with a voice-capable phone number
-- A public HTTPS/WSS URL for Twilio to reach your server (e.g., via `ngrok`)
-- FFmpeg (for optional mixing). On Windows, install to `C:\ffmpeg\bin` or add to PATH.
+- OpenAI API key with Realtime access
+- Twilio account with a voice-capable phone number
+- MySQL 8+ (set `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_USER`, `MYSQL_PASSWORD`, `MYSQL_DATABASE`)
+- RabbitMQ (set `AMQP_URL`, default `amqp://localhost`)
+- FFmpeg (set `FFMPEG_PATH` and `FFPROBE_PATH` on Windows or add to PATH)
+- ngrok (to expose `wss://.../media-stream` publicly during development) 
 
 ### 1) Backend setup
 1. Open a terminal in the `backend` directory and install dependencies:
@@ -226,6 +95,16 @@ Observability:
 
    # Server
    PORT=5050                          # Optional (defaults to 5050)
+
+    # MySQL
+    MYSQL_HOST=localhost
+    MYSQL_PORT=3306
+    MYSQL_USER=root
+    MYSQL_PASSWORD=your_password
+    MYSQL_DATABASE=voiceagent
+
+    # RabbitMQ
+    AMQP_URL=amqp://localhost
    ```
 3. Start the server:
    ```bash
@@ -282,6 +161,19 @@ Options to run it:
 To place an outbound call:
 1. Ensure the backend is running and the TwiML in `server.js` points to your current `wss://.../media-stream` URL.
 2. Open the frontend, enter a full E.164 number (e.g., `+19195551234`), then click “Make Call”.
+
+### Running the server and worker
+- Terminal 1 (server):
+  ```bash
+  cd backend
+  npm start
+  ```
+- Terminal 2 (worker that processes queue and transcriptions):
+  ```bash
+  cd backend
+  npm run worker
+  ```
+The server enqueues mix/transcription jobs to RabbitMQ when a call ends; the worker consumes jobs, mixes caller+agent audio, transcribes with timestamps, and stores the JSON transcript in MySQL.
 
 ### How it works (high level)
 - On Twilio `'start'`: the server creates/initializes two μ-law WAVs via `twilioStream.js`, starts a silence filler for the agent track, and opens an OpenAI Realtime WS (`openaiRealtime.js`).
